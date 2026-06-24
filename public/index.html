@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🕵️‍♂️ لعبة الجاسوس الخفية - غرف متعددة</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <div class="container">
+        <h1>🕵️‍♂️ لعبة الجاسوس</h1>
+
+        <!-- شاشة الدخول واختيار الغرفة والاطلاع على المتواجدين -->
+        <div id="login-screen" class="card">
+            <h2>مرحباً بك! اختر غرفتك واسمك:</h2>
+            <input type="text" id="username-input" placeholder="اكتب اسمك هنا..." maxlength="15">
+            
+            <label for="room-select" style="display:block; margin: 10px 0; font-weight: bold;">اختر غرفة (شاهد من يتواجد بها أولاً):</label>
+            <select id="room-select" onchange="previewRoomPlayers()" style="width: 85%; padding: 12px; border-radius: 8px; font-weight: bold;">
+                <option value="الغرفة 1">🏢 الغرفة رقم 1</option>
+                <option value="الغرفة 2">🏢 الغرفة رقم 2</option>
+                <option value="الغرفة 3">🏢 الغرفة رقم 3</option>
+                <option value="الغرفة 4">🏢 الغرفة رقم 4</option>
+                <option value="الغرفة 5">🏢 الغرفة رقم 5</option>
+            </select>
+
+            <!-- صندوق معاينة اللاعبين في الغرفة المحددة قبل الدخول -->
+            <div id="room-preview-box" style="background: #1f4068; padding: 10px; margin: 15px auto; width: 80%; border-radius: 8px; font-size: 14px;">
+                👥 المتواجدون حالياً: <span id="preview-players-names" style="color: #ffde7d;">لا يوجد أحد</span>
+            </div>
+
+            <button onclick="joinGame()">دخول الغرفة</button>
+        </div>
+
+        <!-- شاشة الانتظار مع خروج وكيك بـ 3 أصوات -->
+        <div id="lobby-screen" class="card hidden">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h2 id="lobby-title" style="margin: 0;">غرفة الانتظار</h2>
+                <button onclick="leaveRoom()" style="background: #555; padding: 6px 12px; font-size: 13px;">مغادرة الغرفة 🚪</button>
+            </div>
+            <p class="hint">يتطلب طرد أي لاعب تصويت 3 أشخاص عليه ⚙️</p>
+            <ul id="players-list"></ul>
+            <button id="start-btn" onclick="startMatch()">ابدأ اللعبة 🎮</button>
+        </div>
+
+        <!-- شاشة اللعبة الأساسية -->
+        <div id="game-screen" class="card hidden">
+            <div class="word-box">
+                <h3>كلمتك السرية:</h3>
+                <h1 id="secret-word">---</h1>
+                <p id="role-badge"></p>
+            </div>
+
+            <div id="describe-section" class="section hidden">
+                <hr>
+                <h3>📝 اكتب وصفك الآن (من 1 إلى 5 كلمات):</h3>
+                <input type="text" id="desc-input" placeholder="مثال: حلوة، تنمو في الشجر...">
+                <button onclick="submitDescription()">إرسال الوصف</button>
+            </div>
+
+            <div id="board-section" class="section">
+                <hr>
+                <h3>💬 لوحة أوصاف اللاعبين الحالية:</h3>
+                <ul id="descriptions-board"></ul>
+            </div>
+
+            <div id="timer-section" class="section hidden">
+                <div class="timer">⏳ وقت النقاش: <span id="countdown">60</span> ثانية</div>
+            </div>
+
+            <div id="voting-section" class="section hidden">
+                <hr>
+                <h3>🎯 من تعتقد أنه الجاسوس؟ صوّت الآن:</h3>
+                <div id="voting-buttons"></div>
+            </div>
+        </div>
+
+        <!-- شاشة النتيجة -->
+        <div id="result-screen" class="card hidden">
+            <h2 id="result-title">الجولة انتهت!</h2>
+            <p id="result-log" class="log-msg"></p>
+            <div class="word-reveal">
+                <p>كلمة المواطنين: <strong id="reveal-citizen" style="color: green;"></strong></p>
+                <p>كلمة الجواسيس: <strong id="reveal-spy" style="color: red;"></strong></p>
+            </div>
+            <button onclick="backToLobby()">العودة لغرفة الانتظار 🔄</button>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="client.js"></script>
+</body>
+</html>
