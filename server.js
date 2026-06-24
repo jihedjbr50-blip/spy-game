@@ -5,242 +5,223 @@ const io = require('socket.io')(http);
 
 app.use(express.static('public'));
 
-// هيكل البيانات لدعم الغرف
-let rooms = {
-    "الغرفة 1": { players: [], gameStarted: false, descriptions: {}, votes: {}, currentWords: {} },
-    "الغرفة 2": { players: [], gameStarted: false, descriptions: {}, votes: {}, currentWords: {} },
-    "الغرفة 3": { players: [], gameStarted: false, descriptions: {}, votes: {}, currentWords: {} },
-    "الغرفة 4": { players: [], gameStarted: false, descriptions: {}, votes: {}, currentWords: {} },
-    "الغرفة 5": { players: [], gameStarted: false, descriptions: {}, votes: {}, currentWords: {} }
-};
-
-// بنك تصنيفات ضخم لتوليد الكلمات عشوائياً في لحظة بدء الجيم
-const categoryBank = {
-    "فواكه": ["تفاحة", "كمثرى", "موز", "برتقال", "مانجو", "خوخ", "مشمش", "فراولة"],
-    "وسائل نقل": ["طائرة", "قطار", "سيارة", "حافلة", "دراجة نارية", "سفينة", "مروحية"],
-    "مشروبات": ["قهوة", "شاي", "عصير ليمون", "حليب", "مياه غازية", "شوكولاتة ساخنة"],
-    "حيوانات مفترسة": ["أسد", "نمر", "فهد", "ذئب", "ضبع", "نمر مرقط"],
-    "أجهزة إلكترونية": ["هاتف ذكي", "حاسوب محمول", "جهاز لوحي", "تلفاز ذكي", "ساعة ذكية"],
-    "أدوات مكتبية": ["قلم حبر", "قلم رصاص", "دفتر ملاحظات", "ممحاة", "مسطرة", "مقص"],
-    "خضروات": ["بطاطس", "طماطم", "جزر", "خيار", "بصل", "ثوم", "باذنجان"]
-};
-
-// دالة لتوليد كلمتين متقاربتين تلقائياً في لحظة بدء اللعبة
-function generateDynamicWords() {
-    // 1. اختيار تصنيف عشوائي
-    const categories = Object.keys(categoryBank);
-    const randomCategory = categories[Math.floor(Math.random() * categories.length)];
-    const wordList = categoryBank[randomCategory];
-
-    // 2. خلط كلمات التصنيف واختيار كلمتين عشوائيتين منه لضمان التقارب
-    const shuffledWords = [...wordList].sort(() => 0.5 - Math.random());
-    
-    return {
-        citizens: shuffledWords[0],
-        spies: shuffledWords[1]
-    };
-}
-
-function broadcastRoomStatus() {
-    let status = {};
-    for (let r in rooms) {
-        status[r] = rooms[r].players.map(p => p.name);
-    }
-    io.emit('rooms_status_update', status);
-}
+const rooms = {};
 
 io.on('connection', (socket) => {
-    let currentRoomName = null;
 
-    socket.emit('init_rooms_status', rooms);
-    broadcastRoomStatus();
+    // انضمام لاعب أو إنشاء غرفة
+    socket.on('joinRoom', ({ username, roomName }) => {
+        socket.join(roomName);
+        socket.roomName = roomName;
+        socket.username = username;
 
-    // 1. دخول لاعب لغرفة
-    socket.on('join_room', ({ username, roomName }) => {
-        if (!rooms[roomName]) return;
-        
+        if (!rooms[roomName]) {
+            rooms[roomName] = {
+                players: [],
+                gameStarted: false,
+                spy: null,
+                word: '',
+                votes: {},
+                notes: {},
+                isVoting: false
+            };
+        }
+
         const room = rooms[roomName];
+
         if (room.gameStarted) {
-            socket.emit('error_message', 'اللعبة بدأت في هذه الغرفة بالفعل!');
+            socket.emit('errorMsg', 'اللعبة بدأت بالفعل في هذه الغرفة، لا يمكنك الدخول الآن.');
+            socket.leave(roomName);
             return;
         }
 
-        currentRoomName = roomName;
-        socket.join(roomName);
-
-        room.players.push({ id: socket.id, name: username, role: 'citizen', word: '', alive: true, voted: false, kickVotes: [] });
-        
-        io.to(roomName).emit('update_players', room.players);
-        broadcastRoomStatus();
+        room.players.push({ id: socket.id, username });
+        io.to(roomName).emit('updatePlayers', room.players);
     });
 
-    // 2. مغادرة الغرفة
-    socket.on('leave_room', () => {
-        if (currentRoomName && rooms[currentRoomName]) {
-            const room = rooms[currentRoomName];
-            room.players = room.players.filter(p => p.id !== socket.id);
-            
-            socket.leave(currentRoomName);
-            io.to(currentRoomName).emit('update_players', room.players);
-            
-            currentRoomName = null;
-            broadcastRoomStatus();
-            socket.emit('leave_success');
-        }
-    });
+    // بدء اللعبة
+    socket.on('startGame', () => {
+        const roomName = socket.roomName;
+        const room = rooms[roomName];
 
-    // 3. نظام التصويت على الكيك (3 أصوات)
-    socket.on('kick_player_vote', (playerIdToKick) => {
-        const room = rooms[currentRoomName];
-        if (!room) return;
+        if (!room || room.gameStarted) return;
 
-        const targetPlayer = room.players.find(p => p.id === playerIdToKick);
-        if (targetPlayer) {
-            if (!targetPlayer.kickVotes.includes(socket.id)) {
-                targetPlayer.kickVotes.push(socket.id);
-                let currentVotesCount = targetPlayer.kickVotes.length;
-                
-                io.to(currentRoomName).emit('kick_vote_progress', { targetName: targetPlayer.name, votesCount: currentVotesCount });
-
-                if (currentVotesCount >= 3) {
-                    room.players = room.players.filter(p => p.id !== playerIdToKick);
-                    io.to(playerIdToKick).emit('you_are_kicked');
-                    io.to(currentRoomName).emit('update_players', room.players);
-
-                    if (room.gameStarted) {
-                        delete room.descriptions[playerIdToKick];
-                        delete room.votes[playerIdToKick];
-                        checkGameRulesAfterKick(currentRoomName);
-                    }
-                    broadcastRoomStatus();
-                }
-            } else {
-                socket.emit('error_message', 'لقد قمت بالتصويت لطرد هذا اللاعب مسبقاً!');
-            }
-        }
-    });
-
-    // 4. بدء اللعبة بالتعديلات الجديدة (الحد الأدنى 4، والكلمات تُنشأ الآن فجأة)
-    socket.on('start_match', () => {
-        const room = rooms[currentRoomName];
-        if (!room || room.players.length < 4) { // تحديث شرط الحد الأدنى إلى 4 لاعبين
-            socket.emit('error_message', 'لا يمكن البدء، الحد الأدنى الحالي هو 4 لاعبين!');
+        // التحقق من الحد الأدنى لبدء اللعبة
+        if (room.players.length < 3) {
+            socket.emit('errorMsg', 'لا يمكن بدء اللعبة! الحد الأدنى للاعبين هو 3 لاعبين.');
             return;
         }
 
         room.gameStarted = true;
-        room.descriptions = {};
+        room.isVoting = false;
+        room.notes = {};
         room.votes = {};
-        room.players.forEach(p => { p.alive = true; p.voted = false; p.kickVotes = []; });
 
-        // تعديل شروط توزيع الجواسيس بناءً على طلبك الجديد:
-        let numSpies = 1;
-        if (room.players.length >= 4 && room.players.length <= 7) numSpies = 1;
-        else if (room.players.length >= 8 && room.players.length <= 12) numSpies = 2;
-        else if (room.players.length >= 13) numSpies = 3;
+        const words = ['تفاحة', 'سيارة', 'مدرسة', 'مستشفى', 'هاتف', 'طائرة'];
+        room.word = words[Math.floor(Math.random() * words.length)];
+        
+        const spyIndex = Math.floor(Math.random() * room.players.length);
+        room.spy = room.players[spyIndex];
 
-        let shuffled = [...room.players].sort(() => 0.5 - Math.random());
-        let spyIds = shuffled.slice(0, numSpies).map(p => p.id);
-
-        // هنا السحر! إنشاء الكلمتين في نفس هذه اللحظة عشوائياً وديناميكياً
-        room.currentWords = generateDynamicWords();
-
-        room.players.forEach(player => {
-            if (spyIds.includes(player.id)) {
-                player.role = 'spy';
-                player.word = room.currentWords.spies;
+        room.players.forEach((player) => {
+            if (player.id === room.spy.id) {
+                io.to(player.id).emit('gameRole', { role: 'spy', word: '🕵️‍♂️ أنت الجاسوس! حاول التخمين.' });
             } else {
-                player.role = 'citizen';
-                player.word = room.currentWords.citizens;
+                io.to(player.id).emit('gameRole', { role: 'citizen', word: `🍎 الكلمة السرية هي: ${room.word}` });
             }
-            io.to(player.id).emit('receive_role', { word: player.word, role: player.role });
         });
 
-        io.to(currentRoomName).emit('game_state_changed', { state: 'DESCRIBE_STAGE', players: room.players });
+        // تشغيل مرحلة الملاحظات تلقائياً مع المؤقت الجديد
+        startNotesPhase(roomName);
     });
 
-    // 5. استقبال الأوصاف
-    socket.on('submit_description', (descText) => {
-        const room = rooms[currentRoomName];
-        if (!room) return;
+    // استقبال الملاحظات من اللاعبين
+    socket.on('sendNote', (noteText) => {
+        const roomName = socket.roomName;
+        const room = rooms[roomName];
+        if (!room || !room.gameStarted) return;
 
-        let player = room.players.find(p => p.id === socket.id);
-        if (player && player.alive) {
-            room.descriptions[socket.id] = descText;
-            io.to(currentRoomName).emit('update_descriptions', { name: player.name, desc: descText });
+        room.notes[socket.id] = { username: socket.username, text: noteText || 'لم يكتب شيئاً' };
 
-            let alivePlayers = room.players.filter(p => p.alive);
-            if (Object.keys(room.descriptions).length === alivePlayers.length) {
-                io.to(currentRoomName).emit('game_state_changed', { state: 'DISCUSSION_STAGE' });
-            }
+        if (socket.kickTimeout) clearTimeout(socket.kickTimeout);
+
+        // إذا أرسل الجميع الملاحظات، يتم عرضها والبدء بالتصويت فوراً
+        if (Object.keys(room.notes).length === room.players.length) {
+            io.to(roomName).emit('allNotesRevealed', Object.values(room.notes));
+            
+            room.isVoting = true;
+            room.votes = {};
+            io.to(roomName).emit('startVotingPhase', room.players);
         }
     });
 
-    // 6. استقبال التصويت
-    socket.on('submit_vote', (targetId) => {
-        const room = rooms[currentRoomName];
-        if (!room) return;
+    // استقبال التصويت
+    socket.on('castVote', (votedPlayerId) => {
+        const roomName = socket.roomName;
+        const room = rooms[roomName];
+        if (!room || !room.isVoting) return;
 
-        let voter = room.players.find(p => p.id === socket.id);
-        if (voter && voter.alive && !voter.voted) {
-            voter.voted = true;
-            room.votes[socket.id] = targetId;
-            io.to(currentRoomName).emit('player_voted_status', { playerId: socket.id });
+        room.votes[socket.id] = votedPlayerId;
 
-            let alivePlayers = room.players.filter(p => p.alive);
-            if (Object.keys(room.votes).length === alivePlayers.length) {
-                calculateVoteResult(currentRoomName);
-            }
+        if (Object.keys(room.votes).length === room.players.length) {
+            checkVotes(roomName);
         }
     });
 
+    // حماية اللعبة من خروج اللاعبين المفاجئ أو طردهم (Glitches)
     socket.on('disconnect', () => {
-        if (currentRoomName && rooms[currentRoomName]) {
-            const room = rooms[currentRoomName];
+        const roomName = socket.roomName;
+        const username = socket.username;
+        const room = rooms[roomName];
+
+        if (socket.kickTimeout) clearTimeout(socket.kickTimeout);
+
+        if (room) {
             room.players = room.players.filter(p => p.id !== socket.id);
-            io.to(currentRoomName).emit('update_players', room.players);
-            if (room.players.length === 0) room.gameStarted = false;
-            broadcastRoomStatus();
+            delete room.notes[socket.id];
+            delete room.votes[socket.id];
+
+            io.to(roomName).emit('updatePlayers', room.players);
+
+            if (room.gameStarted) {
+                // 1. إذا خرج الجاسوس ينتهي القيم بفوز المواطنين
+                if (room.spy && room.spy.id === socket.id) {
+                    io.to(roomName).emit('gameEnded', `🚨 خرج الجاسوس (${username}) من اللعبة! فاز المواطنون تلقائياً.`);
+                    resetRoom(room);
+                } 
+                // 2. إذا خرج لاعب عادي وقل عدد اللاعبين عن الحد الأدنى (3 لاعبين) ينتهي القيم فوراً
+                else if (room.players.length < 3) {
+                    io.to(roomName).emit('gameEnded', `⚠️ انتهت اللعبة بسبب خروج اللاعب (${username}) وهبوط العدد عن الحد الأدنى (3 لاعبين).`);
+                    resetRoom(room);
+                }
+                // 3. تحديث فحص التصويت إذا كان جارياً لمنع تعليق القيم بانتظار الغائب
+                else if (room.isVoting) {
+                    if (Object.keys(room.votes).length === room.players.length && room.players.length > 0) {
+                        checkVotes(roomName);
+                    }
+                }
+            }
+
+            if (room.players.length === 0) {
+                delete rooms[roomName];
+            }
         }
     });
 });
 
-function checkGameRulesAfterKick(roomName) {
+// نظام مؤقت الملاحظات وطرد من يتأخر عن 30 ثانية
+function startNotesPhase(roomName) {
     const room = rooms[roomName];
-    let aliveSpies = room.players.filter(p => p.role === 'spy' && p.alive).length;
-    let aliveCitizens = room.players.filter(p => p.role === 'citizen' && p.alive).length;
+    room.notes = {};
+    
+    io.to(roomName).emit('startNotesTimer', 30);
 
-    if (aliveSpies === 0) {
-        io.to(roomName).emit('round_result', { message: "تم طرد الجاسوس الأخير خارج اللعبة!", gameResult: "CITIZENS_WIN", players: room.players, correctWords: room.currentWords });
-        room.gameStarted = false;
-    } else if (aliveCitizens <= aliveSpies && aliveCitizens > 0) {
-        io.to(roomName).emit('round_result', { message: "انخفض عدد المواطنين بسبب الطرد!", gameResult: "SPIES_WIN", players: room.players, correctWords: room.currentWords });
-        room.gameStarted = false;
+    room.players.forEach(player => {
+        const playerSocket = io.sockets.sockets.get(player.id);
+        if (playerSocket) {
+            playerSocket.kickTimeout = setTimeout(() => {
+                // إذا انتهى الوقت ولم يرسل الملاحظة، يتم طرده من الروم
+                if (!room.notes[player.id]) {
+                    playerSocket.emit('kicked', '⏰ تم طردك تلقائياً من الروم بسبب تأخرك في كتابة الملاحظة (30 ثانية)!');
+                    playerSocket.leave(roomName);
+                    
+                    // إخراجه رسمياً من مصفوفة اللاعبين
+                    room.players = room.players.filter(p => p.id !== player.id);
+                    io.to(roomName).emit('updatePlayers', room.players);
+                    
+                    // فحص فوري: هل طرده تسبب في هبوط العدد عن الحد الأدنى؟
+                    if (room.players.length < 3) {
+                        io.to(roomName).emit('gameEnded', '⚠️ انتهت اللعبة بعد طرد اللاعبين المتأخرين وهبوط العدد الإجمالي عن 3 لاعبين.');
+                        resetRoom(room);
+                    } 
+                    // إذا كان الباقون قد أرسلوا ملاحظاتهم بعد طرده، ننتقل للتصويت مباشرة
+                    else if (Object.keys(room.notes).length === room.players.length) {
+                        io.to(roomName).emit('allNotesRevealed', Object.values(room.notes));
+                        room.isVoting = true;
+                        io.to(roomName).emit('startVotingPhase', room.players);
+                    }
+                }
+            }, 30000); // 30 ثانية
+        }
+    });
+}
+
+function checkVotes(roomName) {
+    const room = rooms[roomName];
+    const voteCounts = {};
+
+    Object.values(room.votes).forEach(votedId => {
+        voteCounts[votedId] = (voteCounts[votedId] || 0) + 1;
+    });
+
+    let highestVotedId = null;
+    let maxVotes = 0;
+    for (const [id, count] of Object.entries(voteCounts)) {
+        if (count > maxVotes) {
+            maxVotes = count;
+            highestVotedId = id;
+        }
     }
+
+    const votedPlayer = room.players.find(p => p.id === highestVotedId);
+
+    if (votedPlayer && votedPlayer.id === room.spy.id) {
+        io.to(roomName).emit('gameEnded', `🎉 كفو! تم كشف الجاسوس بنجاح وهو: [ ${votedPlayer.username} ]. فاز المواطنون!`);
+    } else {
+        io.to(roomName).emit('gameEnded', `💥 خسارة! صوّتّم ضد الشخص الخطأ. الجاسوس الحقيقي كان: [ ${room.spy.username} ]. فاز الجاسوس!`);
+    }
+
+    resetRoom(room);
 }
 
-function calculateVoteResult(roomName) {
-    const room = rooms[roomName];
-    let voteCounts = {};
-    Object.values(room.votes).forEach(id => voteCounts[id] = (voteCounts[id] || 0) + 1);
-
-    let eliminatedId = Object.keys(voteCounts).reduce((a, b) => voteCounts[a] > voteCounts[b] ? a : b);
-    let eliminatedPlayer = room.players.find(p => p.id === eliminatedId);
-    eliminatedPlayer.alive = false;
-
-    let msg = `تم طرد [ ${eliminatedPlayer.name} ] بـ ${voteCounts[eliminatedId]} أصوات. ` + (eliminatedPlayer.role === 'spy' ? "🔥 وكان جاسوساً!" : "😢 وكان مواطناً.");
-
-    let aliveSpies = room.players.filter(p => p.role === 'spy' && p.alive).length;
-    let aliveCitizens = room.players.filter(p => p.role === 'citizen' && p.alive).length;
-
-    let gameResult = "CONTINUE";
-    if (aliveSpies === 0) { gameResult = "CITIZENS_WIN"; room.gameStarted = false; }
-    else if (aliveCitizens <= aliveSpies) { gameResult = "SPIES_WIN"; room.gameStarted = false; }
-
-    io.to(roomName).emit('round_result', { message: msg, gameResult: gameResult, players: room.players, correctWords: room.currentWords });
-    room.votes = {}; room.descriptions = {};
+function resetRoom(room) {
+    room.gameStarted = false;
+    room.isVoting = false;
+    room.spy = null;
+    room.word = '';
+    room.notes = {};
+    room.votes = {};
 }
 
-// يقرأ المنفذ الخاص بالاستضافة، وإذا لم يجده يعمل على 3000 محلياً
-const PORT = process.env.PORT || 3000; 
-http.listen(PORT, () => console.log(`السيرفر يعمل على منفذ ${PORT}`));
+const PORT = process.env.PORT || 3000;
+http.listen(PORT, () => console.log(`السيرفر يعمل بنجاح`));
